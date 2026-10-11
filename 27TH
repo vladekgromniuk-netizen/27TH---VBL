@@ -1,0 +1,195 @@
+local genv = getgenv()
+if genv.VLHitbox then
+    local old = genv.VLHitbox
+    if old.render then old.render:Disconnect() end
+    if old.added then old.added:Disconnect() end
+    if old.removed then old.removed:Disconnect() end
+    if old.jumpconn then old.jumpconn:Disconnect() end
+    if old.stateconn then old.stateconn:Disconnect() end
+    if old.forceconn then old.forceconn:Disconnect() end
+    if old.inputconn then old.inputconn:Disconnect() end
+    for _, v in pairs(old.balls or {}) do
+        pcall(function()
+            if v.box then v.box:Destroy() end
+        end)
+    end
+end
+
+local CS = game:GetService("CollectionService")
+local RS = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local VIM = game:GetService("VirtualInputManager")
+local Players = game:GetService("Players")
+local LP = Players.LocalPlayer
+local cam = workspace.CurrentCamera
+
+local rad = 3
+local AfterJumpDelay = 0
+
+local balls = {}
+local outlinesVisible = false
+
+local function updateAllBallSizes()
+    for _, d in pairs(balls) do
+        if d.box then
+            d.box.Size = Vector3.new(rad * 2, rad * 2, rad * 2)
+        end
+    end
+end
+
+local function updateBoxVisibility()
+    for _, d in pairs(balls) do
+        if d.box then
+            d.box.Transparency = outlinesVisible and 0.85 or 1
+        end
+    end
+end
+
+local function addBall(ball)
+    if not ball:IsA("Model") or not ball:IsDescendantOf(workspace) then return end
+    local root = ball.PrimaryPart or ball:FindFirstChildWhichIsA("BasePart", true)
+    if not root or balls[ball] then return end
+
+    local box = Instance.new("Part")
+    box.Shape = Enum.PartType.Ball
+    box.Size = Vector3.new(rad * 2, rad * 2, rad * 2)
+    box.CFrame = root.CFrame
+    box.Transparency = outlinesVisible and 0.85 or 1
+    box.Color = Color3.fromRGB(0, 255, 255)
+    box.Material = Enum.Material.Neon
+    box.CanCollide = false
+    box.CanTouch = false
+    box.CanQuery = true
+    box.Anchored = true
+    box.CastShadow = false
+    box.Massless = true
+    box.Parent = ball
+
+    balls[ball] = { box = box }
+end
+
+local function killBall(ball)
+    local d = balls[ball]
+    if not d then return end
+    pcall(function()
+        if d.box then d.box:Destroy() end
+    end)
+    balls[ball] = nil
+end
+
+local added = CS:GetInstanceAddedSignal("Ball"):Connect(addBall)
+local removed = CS:GetInstanceRemovedSignal("Ball"):Connect(killBall)
+
+local render = RS.RenderStepped:Connect(function()
+    cam = workspace.CurrentCamera
+    for ball, d in pairs(balls) do
+        local root = ball.PrimaryPart or ball:FindFirstChildWhichIsA("BasePart", true)
+        if not root or not ball.Parent then
+            killBall(ball)
+        else
+            d.box.CFrame = root.CFrame
+        end
+    end
+end)
+
+local inputconn = UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if input.KeyCode == Enum.KeyCode.P then
+        outlinesVisible = not outlinesVisible
+        updateBoxVisibility()
+        print("Hitbox Outline Widoczny:", outlinesVisible)
+
+    elseif input.KeyCode == Enum.KeyCode.Zero then
+        rad = rad + 1
+        if rad > 5 then
+            rad = 1
+        end
+        updateAllBallSizes()
+        print("Hitbox Size:", rad)
+    end
+end)
+
+for _, ball in ipairs(CS:GetTagged("Ball")) do
+    addBall(ball)
+end
+
+local function pressShift()
+    VIM:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game)
+    task.wait(0.03)
+    VIM:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game)
+end
+
+local hum, root
+local jumpconn, stateconn, forceconn
+local shiftLocked = false
+local lockedLook = nil
+
+local function setupCharacter(char)
+    if jumpconn then jumpconn:Disconnect() end
+    if stateconn then stateconn:Disconnect() end
+    if forceconn then forceconn:Disconnect() end
+
+    hum = char:WaitForChild("Humanoid")
+    root = char:WaitForChild("HumanoidRootPart")
+    shiftLocked = false
+    lockedLook = nil
+
+    jumpconn = hum.StateChanged:Connect(function(old, new)
+        if new == Enum.HumanoidStateType.Jumping then
+            task.delay(AfterJumpDelay, function()
+                if hum and hum.Parent and not shiftLocked then
+                    local look = cam.CFrame.LookVector
+                    lockedLook = Vector3.new(look.X, 0, look.Z)
+                    if lockedLook.Magnitude > 0.1 then
+                        lockedLook = lockedLook.Unit
+                    else
+                        lockedLook = nil
+                    end
+                    pressShift()
+                    shiftLocked = true
+                end
+            end)
+        end
+    end)
+
+    stateconn = hum.StateChanged:Connect(function(old, new)
+        if (new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running) and shiftLocked then
+            pressShift()
+            shiftLocked = false
+            lockedLook = nil
+        end
+    end)
+
+    forceconn = RS.RenderStepped:Connect(function()
+        if shiftLocked and hum and hum.Parent and lockedLook then
+            local state = hum:GetState()
+            if state == Enum.HumanoidStateType.Jumping
+                or state == Enum.HumanoidStateType.Freefall
+                or hum.FloorMaterial == Enum.Material.Air then
+                if root then
+                    root.CFrame = CFrame.new(root.Position, root.Position + lockedLook)
+                end
+            end
+        end
+    end)
+end
+
+if LP.Character then
+    setupCharacter(LP.Character)
+end
+LP.CharacterAdded:Connect(function(char)
+    task.wait(0.25)
+    setupCharacter(char)
+end)
+
+genv.VLHitbox = {
+    render = render,
+    added = added,
+    removed = removed,
+    jumpconn = jumpconn,
+    stateconn = stateconn,
+    forceconn = forceconn,
+    inputconn = inputconn,
+    balls = balls
+}
